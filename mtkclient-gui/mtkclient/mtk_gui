@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+# MTK Flash Client (c) G.Kreileman, B.Kerler 2021.
+# Licensed under GPLv3 License
+import sys
+import time
+import mock
+import traceback
+import math
+import logging
+import ctypes
+from PySide2.QtCore import Qt, QVariantAnimation
+from PySide2.QtGui import QTextOption, QPixmap, QTransform, QIcon
+from PySide2.QtWidgets import *
+
+from mtkclient.Library.mtk import Mtk
+from mtkclient.Library.gpt import gpt_settings
+from mtkclient.Library.mtk_main import Main, Mtk_Config
+from mtkclient.Library.mtk_da_cmd import DA_handler
+from mtkclient.gui.readFlashPartitions import *
+from mtkclient.gui.toolsMenu import *
+from mtkclient.gui.toolkit import *
+from mtkclient.config.payloads import pathconfig
+from mtkclient.gui.main_gui import *
+# TO do Move all GUI modifications to signals!
+# install exception hook: without this, uncaught exception would cause application to exit
+sys.excepthook = trap_exc_during_debug
+
+# Initiate MTK classes
+variables = mock.Mock()
+variables.cmd = "stage"
+variables.debugmode = True
+path=pathconfig()
+config = Mtk_Config(loglevel=logging.INFO, gui=None)
+config.gpt_settings = gpt_settings(gpt_num_part_entries='0', gpt_part_entry_size='0',
+                                   gpt_part_entry_start_lba='0')  # This actually sets the right GPT settings..
+# if sys.platform.startswith('darwin'):
+#    config.ptype = "kamakiri" #Temp for Mac testing
+MtkTool = Main(variables)
+mtkClass = Mtk(config=config, loglevel=logging.INFO)
+loglevel = logging.INFO
+da_handler = DA_handler(mtkClass, loglevel)
+
+guiState = "welcome"
+phoneInfo = {"chipset": "", "bootMode": "", "daInit": False, "cdcInit": False}
+
+
+def getDevInfo(self, parameters):
+    print(parameters)
+    mtkClass = parameters[0]
+    da_handler = parameters[1]
+    phoneInfo = parameters[2]
+    self.sendToLogSignal.emit("CONNECTING!")
+    mtkClass.config.gui = self.sendToLogSignal
+    mtkClass = da_handler.configure_da(mtkClass, preloader=None)
+    if mtkClass:
+        phoneInfo['daInit'] = True
+        phoneInfo['chipset'] = str(mtkClass.config.chipconfig.name) + \
+                               " (" + str(mtkClass.config.chipconfig.description) + ")"
+        if mtkClass.config.is_brom:
+            phoneInfo['bootMode'] = "Bootrom mode"
+        elif mtkClass.config.chipconfig.damode:
+            phoneInfo['bootMode'] = "DA mode"
+        else:
+            phoneInfo['bootMode'] = "Preloader mode"
+        self.sendUpdateSignal.emit()
+    # try:
+    #    print(mtkClass.daloader.get_partition_data(parttype="user"))
+    # except Exception:
+    #    print(traceback.format_exc())
+    # MtkTool.cmd_stage(mtkClass, None, None, None, False)
+
+
+def sendToLog(info):
+    t = time.localtime()
+    mainwindow.logBox.appendPlainText(time.strftime("[%H:%M:%S", t) + "]: " + info)
+    mainwindow.logBox.verticalScrollBar().setValue(mainwindow.logBox.verticalScrollBar().maximum())
+
+
+def updateGui():
+    global phoneInfo
+    mainwindow.phoneInfoTextbox.setText("Phone detected:\n" + phoneInfo['chipset'] + "\n" + phoneInfo['bootMode'])
+    mainwindow.status.setText("Device detected, please wait.\nThis can take a while...")
+    if phoneInfo['daInit']:
+        mainwindow.status.setText("Device connected :)")
+        mainwindow.menubar.setEnabled(True)
+        pixmap = QPixmap(path.get_images_path("phone_connected.png")).scaled(128, 128,
+                                                                             Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pixmap.setDevicePixelRatio(2.0)
+        mainwindow.pic.setPixmap(pixmap)
+        spinnerAnim.stop()
+        mainwindow.spinner_pic.setHidden(True)
+    else:
+        if not phoneInfo['cdcInit']:
+            mainwindow.status.setText("Error initialising. Did you install the drivers?")
+        spinnerAnim.start()
+        mainwindow.spinner_pic.setHidden(False)
+
+
+def openReadflashWindow(q):
+    # status.setText("OH YEAH"+str(q.text()))
+    readFlashWindowVal = ReadFlashWindow(w, mtkClass, da_handler, sendToLog)
+    # w.close()
+
+
+def openToolsMenu(q):
+    # status.setText("OH YEAH"+str(q.text()))
+    if q.text() == "Generate RPMB keys":
+        readFlashWindowVal = generateKeysMenu(w, mtkClass, da_handler, sendToLog)
+    # w.close()
+
+
+if __name__ == '__main__':
+    # Init the app window
+    app = QApplication(sys.argv)
+    win = QMainWindow()
+    mainwindow=Ui_MainWindow()
+    mainwindow.setupUi(win)
+    icon = QIcon()
+    icon.addFile(path.get_images_path('logo_32.png'), QSize(32, 32))
+    icon.addFile(path.get_images_path('logo_64.png'), QSize(64, 64))
+    icon.addFile(path.get_images_path('logo_256.png'), QSize(256, 256))
+    icon.addFile(path.get_images_path('logo_512.png'), QSize(512, 512))
+    app.setWindowIcon(icon)
+    win.setWindowIcon(icon)
+    if sys.platform.startswith('win'):
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('MTKTools.Gui')
+    dpiMultiplier = win.logicalDpiX()
+    if dpiMultiplier == 72:
+        dpiMultiplier = 2
+    else:
+        dpiMultiplier = 1
+    addTopMargin = 20
+    if sys.platform.startswith('darwin'):  # MacOS has the toolbar in the top bar insted of in the app...
+        addTopMargin = 0
+    #win.setFixedSize(600, 400 + addTopMargin)
+    w = QWidget(win)
+    w.move(0,addTopMargin)
+    w.setFixedSize(600, 400)
+    win.setWindowTitle("MTKClient - Version 2.0 beta")
+    # lay = QVBoxLayout(self)
+
+    # Menubar
+    mainwindow.readFlashMenu.triggered[QAction].connect(openReadflashWindow)
+    mainwindow.toolsFlashMenu.triggered[QAction].connect(openToolsMenu)
+
+    # phone spinner
+    pixmap = QPixmap(path.get_images_path("phone_loading.png")).scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                                                            Qt.TransformationMode.SmoothTransformation)
+    pixmap.setDevicePixelRatio(2.0)
+    mainwindow.spinner_pic.setPixmap(pixmap)
+    mainwindow.spinner_pic.resize(pixmap.width() // 2, pixmap.height() // 2)
+    #mainwindow.spinner_pic.move(551, 25)
+    mainwindow.spinner_pic.show()
+
+    nfpixmap = QPixmap(path.get_images_path("phone_notfound.png")).scaled(128, 128,
+                                                                         Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    mainwindow.pic.setPixmap(nfpixmap)
+
+    logo = QPixmap(path.get_images_path("logo_256.png")).scaled(128, 128,
+                                                                         Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    mainwindow.logoPic.setPixmap(logo)
+    mainwindow.logBox.setHidden(True)
+
+    def spinnerAnimRot(angle):
+        # print(angle)
+        trans = QTransform()
+        # trans.translate(pixmap.width()+angle / 2, pixmap.height() / 2)
+
+        # trans.translate(spinner_pic.width()/2.0 , spinner_pic.height()/2.0)
+        trans.rotate(angle)
+        newPixmap = pixmap.transformed(QTransform().rotate(angle))
+        xoffset = (newPixmap.width() - pixmap.width()) // 2
+        yoffset = (newPixmap.height() - pixmap.height()) // 2
+        rotated = newPixmap.copy(ax=xoffset, ay=yoffset, awidth=pixmap.width(), aheight=pixmap.height())
+        mainwindow.spinner_pic.setPixmap(rotated)
+
+
+    spinnerAnim = QVariantAnimation()
+    spinnerAnim.setDuration(3000)
+    spinnerAnim.setStartValue(0)
+    spinnerAnim.setEndValue(360)
+    spinnerAnim.setLoopCount(-1)
+    spinnerAnim.valueChanged.connect(spinnerAnimRot)
+
+    mainwindow.spinner_pic.setHidden(True)
+
+    def showDebugInfo():
+        if mainwindow.logBox.isHidden():
+            mainwindow.logBox.setHidden(False)
+            mainwindow.debugBtn.setText("Hide debug info")
+        else:
+            mainwindow.logBox.setHidden(True)
+            mainwindow.debugBtn.setText("Show debug info")
+
+    mainwindow.debugBtn.clicked.connect(showDebugInfo)
+    mainwindow.logBox.setWordWrapMode(QTextOption.NoWrap)
+    mainwindow.menubar.setEnabled(False)
+    win.show()
+
+    # Get the device info
+    thread = asyncThread(app, 0, getDevInfo, [mtkClass, da_handler, phoneInfo])
+    thread.sendToLogSignal.connect(sendToLog)
+    thread.sendUpdateSignal.connect(updateGui)
+    thread.start()
+
+    # Run loop the app
+    app.exec_()
+    # Prevent thread from not being closed and call error end codes
+    thread.terminate()
+    thread.wait()

@@ -1,0 +1,12 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "pyusb",
+    "pycryptodome",
+    "colorama",
+    "usb",
+    "PySide2",
+    "mock"
+]
+build-backend = "setuptools.build_meta"
